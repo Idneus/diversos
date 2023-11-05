@@ -1,0 +1,134 @@
+#include <SoftwareSerial.h>
+#include <EBYTE.h>
+#include <ArduinoJson.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <ESP8266WiFi.h>
+
+
+// TRANSMISSOR
+
+// PINAGEM
+
+#define M0_LoRa   D1
+#define M1_LoRa   D2
+#define RX_LoRa   D6
+#define TX_LoRa   D7
+#define AUX_LoRa   D4
+#define botao   D5
+
+SoftwareSerial lora(RX_LoRa, TX_LoRa);
+EBYTE LoRa(&lora, M0_LoRa, M1_LoRa, AUX_LoRa);
+
+const char* ssid1 = "SSID"; 			// Nova rede Wi-Fi
+const char* password1 = "SENHA"; 		// Senha da nova rede Wi-Fi
+
+const char* ntpServer = "pool.ntp.org"; 	// Servidor NTP (usando pool.ntp.org)
+const int gmtOffset_sec = -10800; 		// Fuso horário GMT-3 (Brasília)
+const int daylightOffset_sec = 0;
+
+WiFiUDP udp;
+NTPClient timeClient(udp, ntpServer, gmtOffset_sec);
+
+bool wifiConnected = false;
+bool buttonState = LOW;
+bool sendingOff = false;
+unsigned long offTimestamp = 0;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(botao, INPUT_PULLUP);
+
+  lora.begin(9600);
+  LoRa.init();
+
+  // Desative o modo de economia de energia do Wi-Fi
+  wifi_set_sleep_type(NONE_SLEEP_T);
+
+  Serial.println("Iniciando...");
+  LoRa.PrintParameters();
+  Serial.println("Parâmetros impressos");
+  LoRa.SetMode(MODE_NORMAL);
+
+  Serial.println("Modo normal definido");
+
+  // Conectar à rede Wi-Fi
+  wifiConnected = connectToWiFi(ssid1, password1);
+
+  // Iniciar o cliente NTP
+  timeClient.begin();
+
+  // Sincronizar com o servidor NTP (se conectado à rede Wi-Fi)
+  if (wifiConnected) {
+    timeClient.update();
+  }
+}
+
+bool connectToWiFi(const char* ssid, const char* password) {
+  WiFi.begin(ssid, password);
+  for (int i = 0; i < 30; i++) {
+    if (WiFi.status() == WL_CONNECTED) {
+      return true;
+    }
+    delay(1000);
+  }
+  return false;
+}
+
+void loop() {
+  // Verificar o estado do botão
+  bool estadoBotao = digitalRead(botao);
+
+  if (estadoBotao == HIGH && buttonState == LOW) {
+    // Botão pressionado, enviar dados "on"
+    enviarDadosBotao(true);
+    buttonState = HIGH; // Marcar que o botão está pressionado
+    sendingOff = false; // Reiniciar a contagem para envio "off"
+  }
+
+  if (estadoBotao == LOW and buttonState == HIGH and !sendingOff) {
+    // Botão liberado, aguardar 5 segundos antes de enviar "off"
+    offTimestamp = millis() + 5000;
+    sendingOff = true; // Marcar que está aguardando o envio "off"
+  }
+
+  if (sendingOff and millis() >= offTimestamp) {
+    // Enviar "off" após 5 segundos de atraso
+    enviarDadosBotao(false);
+    buttonState = LOW; // Marcar que o botão está liberado
+    sendingOff = false;
+  }
+
+  // Atualizar o cliente NTP
+  timeClient.update();
+}
+
+void enviarDadosBotao(bool estadoBotao) {
+  // Obtém a data e hora do servidor NTP
+  String timestampStr = timeClient.getFormattedTime();
+
+  // Criando um objeto JSON - ESTA PARTE SERVE APENAS PARA CRIAR UMA MENSAGEM COM MAIS INFORMÇÕES.
+  StaticJsonDocument<200> jsonDocument;
+  jsonDocument["user"] = "ESCOLHA";
+  jsonDocument["car"] = "ESCOLHA";
+  jsonDocument["timestamp"] = timestampStr;
+  jsonDocument["device_class"] = "sensor";
+  jsonDocument["name"] = "ESCOLHA";
+  jsonDocument["unique_id"] = "status_lora";
+  jsonDocument["state"] = estadoBotao ? "on" : "off";
+
+  // Convertendo o JSON para uma string
+  String jsonString;
+  serializeJson(jsonDocument, jsonString);
+
+  // Enviando o JSON via LoRa
+  lora.println(jsonString);
+
+  // Imprimir no console Serial
+  if (estadoBotao) {
+    Serial.print("Enviado: on - ");
+  } else {
+    Serial.print("Enviado: off - ");
+  }
+  Serial.println(timestampStr);
+}
